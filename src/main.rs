@@ -11,12 +11,14 @@ fn merge(a: &Wave, b: &Wave) -> Option<Wave> {
     if a.sample_rate() != b.sample_rate() {
         return None;
     };
-    let mut new = Wave::new(a.channels(), a.sample_rate());
+    let mut new = Wave::new(0, a.sample_rate());
     for x in 0..a.channels() {
         let samples = (0..a.len())
             .map(|p| a.at(x, p))
             .zip((0..b.len()).map(|p| b.at(x, p)))
             .map(|(a, b)| a * b)
+            .cycle()
+            .take(a.len().min(b.len()))
             .collect::<Vec<_>>();
         new.push_channel(&samples);
     }
@@ -47,7 +49,7 @@ fn main() -> Result<(), std::io::Error> {
                     .write(true)
                     .truncate(true)
                     .open(format!(
-                        "{out}/{}",
+                        "{out}/{}.wav",
                         hex::encode({
                             let mut s = Sha3_256::default();
                             s.update(ap.as_os_str().as_encoded_bytes());
