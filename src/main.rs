@@ -39,7 +39,7 @@ fn merge(
             .flat_map(|a| once(a).cycle().take(rx))
             .enumerate()
             .filter_map(|(a, b)| if a % rs == 0 { Some(b) } else { None })
-            .take(a.len().min(b.len()))
+            .take(a.len().min(b.len()) * ax.max(as_).max(bx).max(bs_).max(rx).max(rs))
             .collect::<Vec<_>>();
         new.push_channel(&samples);
     }
