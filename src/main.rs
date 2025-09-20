@@ -43,6 +43,7 @@ fn merge(
             .collect::<Vec<_>>();
         new.push_channel(&samples);
     }
+    new.normalize();
     return Some(new);
 }
 fn main() -> Result<(), std::io::Error> {
@@ -105,11 +106,11 @@ fn main() -> Result<(), std::io::Error> {
             if !h.starts_with(&pow) {
                 return Ok(());
             }
-            let path = format!("{out}/{}", &h[..2]);
-            if !std::fs::exists(&path)? {
-                std::fs::create_dir(path)?;
+            let dir1 = format!("{out}/{}", &h[..4]);
+            if !std::fs::exists(&dir1)? {
+                std::fs::create_dir(&dir1)?;
             }
-            let path = format!("{out}/{}/{h}.wav", &h[..2]);
+            let path = format!("{dir1}/{h}.wav");
             if std::fs::exists(&path)? {
                 return Ok(());
             }
