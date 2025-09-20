@@ -1,6 +1,10 @@
 use std::{collections::BTreeMap, f32::consts::PI, fs::OpenOptions, iter::once, mem::replace};
 
-use fundsp::wave::Wave;
+use fundsp::{
+    hacker::{An, Lowpole, Pinkpass},
+    prelude::{U1, U2, resynth},
+    wave::Wave,
+};
 use itertools::Itertools;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use sha3::{Digest, Sha3_256};
@@ -8,6 +12,7 @@ use sha3::{Digest, Sha3_256};
 enum Mode {
     Standard,
     Atan,
+    FreqMult,
 }
 fn merge(
     a: &Wave,
@@ -20,6 +25,8 @@ fn merge(
     rs: usize,
     // seed: u8,
     mode: Mode,
+    aom: bool,
+    bom: bool,
 ) -> Option<Wave> {
     if a.channels() != b.channels() {
         return None;
@@ -67,21 +74,42 @@ fn merge(
     //     return None;
     // }
     for x in 0..a.channels() {
-        match mode {
-            Mode::Standard | Mode::Atan => {
-                let samples = (0..a.len())
-                    .map(|p| a.at(x, p))
-                    .flat_map(|a| once(a).cycle().take(ax))
+        let zips = (0..a.len())
+            .map(|p| a.at(x, p))
+            .flat_map(|a| once(a).cycle().take(ax))
+            .enumerate()
+            .filter_map(|(a, b)| if a % as_ == 0 { Some(b) } else { None })
+            .zip(
+                (0..b.len())
+                    .map(|p| b.at(x, p))
+                    .flat_map(|b| once(b).cycle().take(bx))
                     .enumerate()
-                    .filter_map(|(a, b)| if a % as_ == 0 { Some(b) } else { None })
-                    .zip(
-                        (0..b.len())
-                            .map(|p| b.at(x, p))
-                            .flat_map(|b| once(b).cycle().take(bx))
-                            .enumerate()
-                            .filter_map(|(a, b)| if a % bs_ == 0 { Some(b) } else { None }),
-                    )
-                    .map(|(as_, bs)| (as_ / aamp, bs / bamp))
+                    .filter_map(|(a, b)| if a % bs_ == 0 { Some(b) } else { None }),
+            )
+            .map(|(as_, bs)| (as_ / aamp, bs / bamp))
+            .map(|(a, b)| {
+                (
+                    if aom && a != 0.0 {
+                        match mode {
+                            Mode::Atan => -a,
+                            _ => (1.0 - a.abs()) * a.signum(),
+                        }
+                    } else {
+                        a
+                    },
+                    if bom && b != 0.0 {
+                        match mode {
+                            Mode::Atan => -b,
+                            _ => (1.0 - b.abs()) * b.signum(),
+                        }
+                    } else {
+                        b
+                    },
+                )
+            });
+        let mut samples = match mode {
+            Mode::Standard | Mode::Atan => {
+                let samples = zips
                     .map(|(a, b)| match mode {
                         Mode::Standard => a * b,
                         Mode::Atan => {
@@ -103,11 +131,74 @@ fn merge(
                         a.len().min(b.len()) * ax.max(as_).max(bx).max(bs_).max(rx).max(rs).min(3),
                     )
                     .collect::<Vec<_>>();
-                new.push_channel(&samples);
+                samples
             }
+            Mode::FreqMult => {
+                let mut tmp = Wave::new(2, a.sample_rate());
+                for z in zips {
+                    tmp.push(z);
+                }
+                tmp = tmp.filter_latency(
+                    tmp.duration(),
+                    &mut resynth::<U2, U1, _>(256, |w| {
+                        for i in 0..w.bins() {
+                            w.set(0, i, w.at(0, i) * w.at(1, i));
+                        }
+                    }),
+                );
+                tmp.normalize();
+                let samples = (0..tmp.len())
+                    .map(|a| tmp.at(0, a))
+                    .cycle()
+                    .flat_map(|a| once(a).cycle().take(rx))
+                    .enumerate()
+                    .filter_map(|(a, b)| if a % rs == 0 { Some(b) } else { None })
+                    .take(
+                        a.len().min(b.len()) * ax.max(as_).max(bx).max(bs_).max(rx).max(rs).min(3),
+                    )
+                    .collect::<Vec<_>>();
+                samples
+            }
+        };
+        let mut tmp = Wave::new(0, a.sample_rate());
+        tmp.push_channel(&samples);
+        tmp = tmp.filter_latency(tmp.duration(), &mut An(Lowpole::<f32, U1>::new(8000.0f32)));
+        samples = (0..tmp.len()).map(|a| tmp.at(0, a)).collect();
+        let mut bytes = samples
+            .iter()
+            .cloned()
+            .scan(0.0, |a, b| {
+                let c = replace(a, b);
+                Some(c - b)
+            })
+            .scan(0.0, |a, b| {
+                let c = replace(a, b);
+                Some(c - b)
+            })
+            .map(|a| (a * 128.0).ceil() as i8 as u8)
+            .zip(
+                samples
+                    .iter()
+                    .cloned()
+                    .map(|a| (a * 128.0).ceil() as i8 as u8),
+            )
+            .map(|(a, b)| a.wrapping_sub(b))
+            .scan(0u8, |a, b| {
+                let c = replace(a, b);
+                Some(c.wrapping_sub(b))
+            })
+            .scan(0u8, |a, b| {
+                let c = replace(a, b);
+                Some(c.wrapping_sub(b))
+            })
+            .collect_vec();
+        if entropy::shannon_entropy(&bytes) > 7.0 {
+            return None;
         }
+        new.push_channel(&samples);
     }
     new.normalize();
+
     return Some(new);
 }
 fn main() -> Result<(), std::io::Error> {
@@ -133,7 +224,7 @@ fn main() -> Result<(), std::io::Error> {
     let xsi = [1usize, 2, 3, 5]
         .into_iter()
         .flat_map(|a| {
-            [1, 2, 3,5]
+            [1, 2, 3, 5]
                 .into_iter()
                 .filter(move |b| *b != a || *b == 1)
                 .map(move |b| (a, b))
@@ -154,9 +245,15 @@ fn main() -> Result<(), std::io::Error> {
         .flat_map(|a| xsi.par_iter().cloned().map(move |b| (a, b)))
         .flat_map(|a| xsi.par_iter().cloned().map(move |b| (a, b)))
         .flat_map(|a| xsi.par_iter().cloned().map(move |b| (a, b)))
-        .flat_map_iter(|a| [Mode::Standard, Mode::Atan].map(move |b| (a, b)))
+        .flat_map_iter(|a| [Mode::Standard, Mode::Atan, Mode::FreqMult].map(move |b| (a, b)))
+        .flat_map_iter(|a| {
+            [true, false]
+                .into_iter()
+                .cartesian_product([true, false])
+                .map(move |b| (a, b))
+        })
         .map(
-            |((((((ap, a), (bp, b)), (rx, rs)), (bx, bs_)), (ax, as_)), mode)| {
+            |(((((((ap, a), (bp, b)), (rx, rs)), (bx, bs_)), (ax, as_)), mode), (aom, bom))| {
                 let h = hex::encode({
                     let mut s = Sha3_256::default();
                     s.update(ap.as_os_str().as_encoded_bytes());
@@ -169,6 +266,15 @@ fn main() -> Result<(), std::io::Error> {
                     }
                     if let Mode::Atan = mode {
                         s.update("atan");
+                    }
+                    if let Mode::FreqMult = mode {
+                        s.update("freqmult");
+                    }
+                    if aom {
+                        s.update("aom");
+                    }
+                    if bom {
+                        s.update("bom");
                     }
                     s.finalize()
                 });
@@ -183,13 +289,17 @@ fn main() -> Result<(), std::io::Error> {
                 if std::fs::exists(&path)? {
                     return Ok(());
                 }
-                if let Some(c) = merge(a, ax, as_, b, bx, bs_, rx, rs, mode) {
+                if let Some(c) = merge(a, ax, as_, b, bx, bs_, rx, rs, mode, aom, bom) {
                     let mut f = OpenOptions::new()
                         .create(true)
                         .write(true)
                         .truncate(true)
                         .open(&path)?;
-                    c.write_wav32(&mut f)?;
+                    if c.duration() > a.duration() * 1.4 && c.duration() > b.duration() * 1.4 {
+                        c.write_wav16(&mut f)?;
+                    } else {
+                        c.write_wav32(&mut f)?;
+                    }
                     println!("{path}");
                 }
 
