@@ -11,8 +11,10 @@ use sha3::{Digest, Sha3_256};
 #[derive(Clone, Copy)]
 enum Mode {
     Standard,
+    Div,
     Atan,
     FreqMult,
+    FreqDivNorm,
 }
 fn merge(
     a: &Wave,
@@ -108,7 +110,7 @@ fn merge(
                 )
             });
         let mut samples = match mode {
-            Mode::Standard | Mode::Atan => {
+            Mode::Standard | Mode::Div | Mode::Atan => {
                 let samples = zips
                     .map(|(a, b)| match mode {
                         Mode::Standard => a * b,
@@ -120,6 +122,14 @@ fn merge(
                                 return 0.0;
                             }
                             (c.atan()) / PI * 2.0
+                        }
+                        Mode::Div => {
+                            if b == 0.0 {
+                                0.0
+                            } else {
+                                let c = a / b;
+                                if c > 1.0 { 1.0 / c } else { c }
+                            }
                         }
                         _ => unreachable!(),
                     })
@@ -133,19 +143,48 @@ fn merge(
                     .collect::<Vec<_>>();
                 samples
             }
-            Mode::FreqMult => {
+            Mode::FreqMult | Mode::FreqDivNorm => {
                 let mut tmp = Wave::new(2, a.sample_rate());
                 for z in zips {
                     tmp.push(z);
                 }
-                tmp = tmp.filter_latency(
-                    tmp.duration(),
-                    &mut resynth::<U2, U1, _>(256, |w| {
-                        for i in 0..w.bins() {
-                            w.set(0, i, w.at(0, i) * w.at(1, i));
-                        }
-                    }),
-                );
+                match mode {
+                    Mode::FreqMult | Mode::FreqDivNorm => {
+                        tmp = tmp.filter_latency(
+                            tmp.duration(),
+                            &mut resynth::<U2, U1, _>(256, |w| {
+                                for i in 0..w.bins() {
+                                    w.set(
+                                        0,
+                                        i,
+                                        match mode {
+                                            Mode::FreqMult => w.at(0, i) * w.at(1, i),
+                                            Mode::FreqDivNorm => match w.at(1, i) {
+                                                x => {
+                                                    if x.norm() == 0.0 {
+                                                        x
+                                                    } else {
+                                                        match w.at(0, i) / x {
+                                                            a => {
+                                                                if a.norm() > 1.0 {
+                                                                    a.inv()
+                                                                } else {
+                                                                    a
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            _ => unreachable!(),
+                                        },
+                                    );
+                                }
+                            }),
+                        )
+                    }
+                    _ => unreachable!(),
+                };
                 tmp.normalize();
                 let samples = (0..tmp.len())
                     .map(|a| tmp.at(0, a))
@@ -162,8 +201,32 @@ fn merge(
         };
         let mut tmp = Wave::new(0, a.sample_rate());
         tmp.push_channel(&samples);
+        let threshold = 0.05;
+        tmp = tmp.filter_latency(tmp.duration(), &mut An(Lowpole::<f32, U1>::new(8000.0f32)));
+
+        for i in 0..tmp.len() {
+            let mut v = tmp.at(0, i);
+            if v.abs() <= threshold {
+                v = 0.0;
+            }
+            tmp.set(0, i, v);
+        }
+        if tmp.amplitude() == 0.0 {
+            continue;
+        }
+        tmp.normalize();
         tmp = tmp.filter_latency(tmp.duration(), &mut An(Lowpole::<f32, U1>::new(8000.0f32)));
         samples = (0..tmp.len()).map(|a| tmp.at(0, a)).collect();
+
+        for _ in 0..(samples.len() / 3) {
+            let Some(p) = samples.pop() else {
+                break;
+            };
+            if p.abs() > threshold {
+                samples.push(p);
+                break;
+            }
+        }
         let mut bytes = samples
             .iter()
             .cloned()
@@ -192,10 +255,23 @@ fn merge(
                 Some(c.wrapping_sub(b))
             })
             .collect_vec();
-        if entropy::shannon_entropy(&bytes) > 7.0 {
-            return None;
+        let ent = entropy::shannon_entropy(&bytes);
+        if ent > 7.0 {
+            continue;
+        }
+        loop {
+            let Some(p) = samples.pop() else {
+                break;
+            };
+            if p.abs() > threshold {
+                samples.push(p);
+                break;
+            }
         }
         new.push_channel(&samples);
+    }
+    if new.channels() == 0{
+        return None;
     }
     new.normalize();
 
@@ -245,7 +321,16 @@ fn main() -> Result<(), std::io::Error> {
         .flat_map(|a| xsi.par_iter().cloned().map(move |b| (a, b)))
         .flat_map(|a| xsi.par_iter().cloned().map(move |b| (a, b)))
         .flat_map(|a| xsi.par_iter().cloned().map(move |b| (a, b)))
-        .flat_map_iter(|a| [Mode::Standard, Mode::Atan, Mode::FreqMult].map(move |b| (a, b)))
+        .flat_map_iter(|a| {
+            [
+                Mode::Standard,
+                Mode::Atan,
+                Mode::FreqMult,
+                Mode::Div,
+                Mode::FreqDivNorm,
+            ]
+            .map(move |b| (a, b))
+        })
         .flat_map_iter(|a| {
             [true, false]
                 .into_iter()
@@ -267,8 +352,14 @@ fn main() -> Result<(), std::io::Error> {
                     if let Mode::Atan = mode {
                         s.update("atan");
                     }
+                    if let Mode::Div = mode {
+                        s.update("div");
+                    }
                     if let Mode::FreqMult = mode {
                         s.update("freqmult");
+                    }
+                    if let Mode::FreqDivNorm = mode {
+                        s.update("freqdivnorm");
                     }
                     if aom {
                         s.update("aom");
