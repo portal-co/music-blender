@@ -268,9 +268,21 @@ fn merge(
                 break;
             }
         }
+        if new.channels() != 0 {
+            while new.len() > samples.len() {
+                let l = samples.len();
+                samples.push(new.at(0, l));
+            }
+            while samples.len() > new.len() {
+                let mut c = new.remove_channel(0);
+                let l = c.len();
+                c.extend_from_slice(&samples[l..]);
+                new.insert_channel(0, &c);
+            }
+        }
         new.push_channel(&samples);
     }
-    if new.channels() == 0{
+    if new.channels() == 0 {
         return None;
     }
     new.normalize();
