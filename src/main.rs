@@ -29,6 +29,8 @@ fn merge(
     mode: Mode,
     aom: bool,
     bom: bool,
+    arev:bool,
+    brev:bool,
 ) -> Option<Wave> {
     if a.channels() != b.channels() {
         return None;
@@ -77,13 +79,13 @@ fn merge(
     // }
     for x in 0..a.channels() {
         let zips = (0..a.len())
-            .map(|p| a.at(x, p))
+            .map(|p| a.at(if arev{a.len() - x - 1}else{x}, p))
             .flat_map(|a| once(a).cycle().take(ax))
             .enumerate()
             .filter_map(|(a, b)| if a % as_ == 0 { Some(b) } else { None })
             .zip(
                 (0..b.len())
-                    .map(|p| b.at(x, p))
+                    .map(|p| b.at(if brev{b.len() - x - 1}else{x}, p))
                     .flat_map(|b| once(b).cycle().take(bx))
                     .enumerate()
                     .filter_map(|(a, b)| if a % bs_ == 0 { Some(b) } else { None }),
@@ -349,8 +351,14 @@ fn main() -> Result<(), std::io::Error> {
                 .cartesian_product([true, false])
                 .map(move |b| (a, b))
         })
+         .flat_map_iter(|a| {
+            [true, false]
+                .into_iter()
+                .cartesian_product([true, false])
+                .map(move |b| (a, b))
+        })
         .map(
-            |(((((((ap, a), (bp, b)), (rx, rs)), (bx, bs_)), (ax, as_)), mode), (aom, bom))| {
+            |((((((((ap, a), (bp, b)), (rx, rs)), (bx, bs_)), (ax, as_)), mode), (aom, bom)),(arev,brev))| {
                 let h = hex::encode({
                     let mut s = Sha3_256::default();
                     s.update(ap.as_os_str().as_encoded_bytes());
@@ -379,6 +387,12 @@ fn main() -> Result<(), std::io::Error> {
                     if bom {
                         s.update("bom");
                     }
+                     if arev {
+                        s.update("arev");
+                    }
+                    if brev {
+                        s.update("brev");
+                    }
                     s.finalize()
                 });
                 if !h.starts_with(&pow) {
@@ -392,7 +406,7 @@ fn main() -> Result<(), std::io::Error> {
                 if std::fs::exists(&path)? {
                     return Ok(());
                 }
-                if let Some(c) = merge(a, ax, as_, b, bx, bs_, rx, rs, mode, aom, bom) {
+                if let Some(c) = merge(a, ax, as_, b, bx, bs_, rx, rs, mode, aom, bom,arev,brev) {
                     let mut f = OpenOptions::new()
                         .create(true)
                         .write(true)
