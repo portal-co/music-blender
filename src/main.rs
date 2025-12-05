@@ -7,7 +7,7 @@ use fundsp::{
 };
 use itertools::Itertools;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use sha3::{Digest, Sha3_256};
+use sha3::{Sha3_256, digest::Update};
 #[derive(Clone, Copy)]
 enum Mode {
     Standard,
@@ -32,6 +32,53 @@ struct MergeParams<'a> {
     bom: bool,
     arev: bool,
     brev: bool,
+}
+
+impl<'a> MergeParams<'a> {
+    fn update_hash(&self, s: &mut (dyn Update + '_)) {
+        for (v, w) in [self.ax, self.as_, self.bx, self.bs_, self.rx, self.rs]
+            .into_iter()
+            .enumerate()
+        {
+            if w != 1 {
+                s.update(&usize::to_ne_bytes(v));
+                s.update(&usize::to_ne_bytes(w));
+            }
+        }
+        if let Mode::Atan = self.mode {
+            s.update(b"atan");
+        }
+        if let Mode::Div = self.mode {
+            s.update(b"div");
+        }
+        if let Mode::FreqMult = self.mode {
+            s.update(b"freqmult");
+        }
+        if let Mode::FreqDivNorm = self.mode {
+            s.update(b"freqdivnorm");
+        }
+        if self.aom {
+            s.update(b"aom");
+        }
+        if self.bom {
+            s.update(b"bom");
+        }
+        if self.arev {
+            s.update(b"arev");
+        }
+        if self.brev {
+            s.update(b"brev");
+        }
+    }
+    fn compute_hash(&self, ap: &std::path::Path, bp: &std::path::Path) -> String {
+        hex::encode({
+            let mut s = Sha3_256::default();
+            s.update(ap.as_os_str().as_encoded_bytes());
+            s.update(bp.as_os_str().as_encoded_bytes());
+            self.update_hash(&mut s);
+            sha3::Digest::finalize(s)
+        })
+    }
 }
 
 fn merge(params: MergeParams) -> Option<Wave> {
@@ -97,13 +144,13 @@ fn merge(params: MergeParams) -> Option<Wave> {
     // }
     for x in 0..a.channels() {
         let zips = (0..a.len())
-            .map(|p| a.at(if arev{a.len() - x - 1}else{x}, p))
+            .map(|p| a.at(if arev { a.len() - x - 1 } else { x }, p))
             .flat_map(|a| once(a).cycle().take(ax))
             .enumerate()
             .filter_map(|(a, b)| if a % as_ == 0 { Some(b) } else { None })
             .zip(
                 (0..b.len())
-                    .map(|p| b.at(if brev{b.len() - x - 1}else{x}, p))
+                    .map(|p| b.at(if brev { b.len() - x - 1 } else { x }, p))
                     .flat_map(|b| once(b).cycle().take(bx))
                     .enumerate()
                     .filter_map(|(a, b)| if a % bs_ == 0 { Some(b) } else { None }),
@@ -369,62 +416,18 @@ fn main() -> Result<(), std::io::Error> {
                 .cartesian_product([true, false])
                 .map(move |b| (a, b))
         })
-         .flat_map_iter(|a| {
+        .flat_map_iter(|a| {
             [true, false]
                 .into_iter()
                 .cartesian_product([true, false])
                 .map(move |b| (a, b))
         })
         .map(
-            |((((((((ap, a), (bp, b)), (rx, rs)), (bx, bs_)), (ax, as_)), mode), (aom, bom)),(arev,brev))| {
-                let h = hex::encode({
-                    let mut s = Sha3_256::default();
-                    s.update(ap.as_os_str().as_encoded_bytes());
-                    s.update(bp.as_os_str().as_encoded_bytes());
-                    for (v, w) in [ax, as_, bx, bs_, rx, rs].into_iter().enumerate() {
-                        if w != 1 {
-                            s.update(usize::to_ne_bytes(v));
-                            s.update(usize::to_ne_bytes(w));
-                        }
-                    }
-                    if let Mode::Atan = mode {
-                        s.update("atan");
-                    }
-                    if let Mode::Div = mode {
-                        s.update("div");
-                    }
-                    if let Mode::FreqMult = mode {
-                        s.update("freqmult");
-                    }
-                    if let Mode::FreqDivNorm = mode {
-                        s.update("freqdivnorm");
-                    }
-                    if aom {
-                        s.update("aom");
-                    }
-                    if bom {
-                        s.update("bom");
-                    }
-                     if arev {
-                        s.update("arev");
-                    }
-                    if brev {
-                        s.update("brev");
-                    }
-                    s.finalize()
-                });
-                if !h.starts_with(&pow) {
-                    return Ok(());
-                }
-                let dir1 = format!("{out}/{}", &h[..4]);
-                if !std::fs::exists(&dir1)? {
-                    std::fs::create_dir(&dir1)?;
-                }
-                let path = format!("{dir1}/{h}.wav");
-                if std::fs::exists(&path)? {
-                    return Ok(());
-                }
-                if let Some(c) = merge(MergeParams {
+            |(
+                (((((((ap, a), (bp, b)), (rx, rs)), (bx, bs_)), (ax, as_)), mode), (aom, bom)),
+                (arev, brev),
+            )| {
+                let params = MergeParams {
                     a,
                     ax,
                     as_,
@@ -438,7 +441,20 @@ fn main() -> Result<(), std::io::Error> {
                     bom,
                     arev,
                     brev,
-                }) {
+                };
+                let h = params.compute_hash(ap, bp);
+                if !h.starts_with(&pow) {
+                    return Ok(());
+                }
+                let dir1 = format!("{out}/{}", &h[..4]);
+                if !std::fs::exists(&dir1)? {
+                    std::fs::create_dir(&dir1)?;
+                }
+                let path = format!("{dir1}/{h}.wav");
+                if std::fs::exists(&path)? {
+                    return Ok(());
+                }
+                if let Some(c) = merge(params) {
                     let mut f = OpenOptions::new()
                         .create(true)
                         .write(true)
