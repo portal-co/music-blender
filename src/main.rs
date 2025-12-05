@@ -16,22 +16,40 @@ enum Mode {
     FreqMult,
     FreqDivNorm,
 }
-fn merge(
-    a: &Wave,
+
+#[derive(Clone, Copy)]
+struct MergeParams<'a> {
+    a: &'a Wave,
     ax: usize,
     as_: usize,
-    b: &Wave,
+    b: &'a Wave,
     bx: usize,
     bs_: usize,
     rx: usize,
     rs: usize,
-    // seed: u8,
     mode: Mode,
     aom: bool,
     bom: bool,
-    arev:bool,
-    brev:bool,
-) -> Option<Wave> {
+    arev: bool,
+    brev: bool,
+}
+
+fn merge(params: MergeParams) -> Option<Wave> {
+    let MergeParams {
+        a,
+        ax,
+        as_,
+        b,
+        bx,
+        bs_,
+        rx,
+        rs,
+        mode,
+        aom,
+        bom,
+        arev,
+        brev,
+    } = params;
     if a.channels() != b.channels() {
         return None;
     };
@@ -406,7 +424,21 @@ fn main() -> Result<(), std::io::Error> {
                 if std::fs::exists(&path)? {
                     return Ok(());
                 }
-                if let Some(c) = merge(a, ax, as_, b, bx, bs_, rx, rs, mode, aom, bom,arev,brev) {
+                if let Some(c) = merge(MergeParams {
+                    a,
+                    ax,
+                    as_,
+                    b,
+                    bx,
+                    bs_,
+                    rx,
+                    rs,
+                    mode,
+                    aom,
+                    bom,
+                    arev,
+                    brev,
+                }) {
                     let mut f = OpenOptions::new()
                         .create(true)
                         .write(true)
