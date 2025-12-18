@@ -1,5 +1,7 @@
-use std::{collections::BTreeMap, f32::consts::PI, fs::OpenOptions, iter::once, mem::replace};
 use clap::Parser;
+use std::{
+    collections::BTreeMap, f32::consts::PI, fs::OpenOptions, iter::once, mem::replace, sync::Mutex,
+};
 
 use fundsp::{
     hacker::{An, Lowpole, Pinkpass},
@@ -365,6 +367,10 @@ fn main() -> Result<(), std::io::Error> {
         #[arg(short, long)]
         out: String,
 
+        /// Maximum output size in MB
+        #[arg(short, long)]
+        max_size: Option<usize>,
+
         /// Hash prefix filter (equivalent to previous -pow)
         #[arg(long, default_value = "")]
         pow: String,
@@ -389,6 +395,7 @@ fn main() -> Result<(), std::io::Error> {
             }
         }
     }
+    let mut size = opts.max_size.map(|a| Mutex::new(a * 1024 * 1024));
     let xsi = [1usize, 2, 3, 5]
         .into_iter()
         .flat_map(|a| {
@@ -477,6 +484,13 @@ fn main() -> Result<(), std::io::Error> {
                         c.write_wav16(&mut f)?;
                     } else {
                         c.write_wav32(&mut f)?;
+                    }
+                    if let Some(a) = &size {
+                        let mut a = a.lock().unwrap();
+                        *a = a.saturating_sub(f.metadata()?.len() as usize);
+                        if *a == 0 {
+                            std::process::exit(0);
+                        }
                     }
                     println!("{path}");
                 }
