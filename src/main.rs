@@ -1,4 +1,5 @@
 use std::{collections::BTreeMap, f32::consts::PI, fs::OpenOptions, iter::once, mem::replace};
+use clap::Parser;
 
 use fundsp::{
     hacker::{An, Lowpole, Pinkpass},
@@ -358,20 +359,32 @@ fn merge(params: MergeParams) -> Option<Wave> {
 }
 fn main() -> Result<(), std::io::Error> {
     let mut waves = BTreeMap::new();
-    let mut args = std::env::args();
-    args.next();
-    let mut out = args.next().unwrap();
-    let mut pow = String::default();
-    if out == "-pow" {
-        out = args.next().unwrap();
-        pow = replace(&mut out, args.next().unwrap());
+    #[derive(Parser)]
+    struct Opt {
+        /// Output directory
+        #[arg(short, long)]
+        out: String,
+
+        /// Hash prefix filter (equivalent to previous -pow)
+        #[arg(long, default_value = "")]
+        pow: String,
+
+        /// Input paths (files or directories). Flags may be mixed with these.
+        #[arg(value_name = "INPUT")]
+        inputs: Vec<std::path::PathBuf>,
     }
-    for a in args {
-        for a in walkdir::WalkDir::new(a) {
-            let a = a?;
-            if a.file_type().is_file() {
-                if let Ok(w) = Wave::load(a.path()) {
-                    waves.insert(a.into_path(), w);
+
+    let opts = Opt::parse();
+
+    let out = opts.out;
+    let pow = opts.pow;
+
+    for input in opts.inputs.iter() {
+        for entry in walkdir::WalkDir::new(input) {
+            let entry = entry?;
+            if entry.file_type().is_file() {
+                if let Ok(w) = Wave::load(entry.path()) {
+                    waves.insert(entry.into_path(), w);
                 }
             }
         }
