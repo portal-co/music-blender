@@ -395,6 +395,9 @@ fn main() -> Result<(), std::io::Error> {
             if a.sample_rate() != b.sample_rate() {
                 return false;
             };
+            if a.len() == 2 || b.len() == 2{
+                return false;
+            }
             return true;
         })
         .flat_map(|a| xsi.par_iter().cloned().map(move |b| (a, b)))
