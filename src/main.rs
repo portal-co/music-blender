@@ -1,4 +1,5 @@
 use clap::Parser;
+use rand::SeedableRng;
 use std::{
     collections::BTreeMap, f32::consts::PI, fs::OpenOptions, iter::once, mem::replace, panic::catch_unwind, sync::{Mutex, OnceLock}
 };
@@ -87,11 +88,9 @@ impl<'a> MergeParams<'a> {
             s.update(b"brev");
         }
     }
-    fn compute_hash(&self, ap: &std::path::Path, bp: &std::path::Path) -> String {
+    fn compute_hash(&self) -> String {
         hex::encode({
             let mut s = Sha3_256::default();
-            s.update(ap.as_os_str().as_encoded_bytes());
-            s.update(bp.as_os_str().as_encoded_bytes());
             self.update_hash(&mut s);
             sha3::Digest::finalize(s)
         })
@@ -99,6 +98,10 @@ impl<'a> MergeParams<'a> {
 }
 
 fn merge(params: MergeParams) -> Option<Wave> {
+    let mut h = sha3::Sha3_256::default();
+    params.update_hash(&mut h);
+    let h: [u8; 32] = h.finalize_fixed().into();
+    let mut h = rand_chacha::ChaCha20Rng::from_seed(h);
     let MergeParams {
         a: (a,_),
         ax,
@@ -479,7 +482,7 @@ fn main() -> Result<(), std::io::Error> {
                     arev,
                     brev,
                 };
-                let h = params.compute_hash(ap, bp);
+                let h = params.compute_hash();
                 if !h.starts_with(&pow) {
                     return Ok(());
                 }
