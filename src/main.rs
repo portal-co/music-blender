@@ -1,6 +1,6 @@
 use clap::Parser;
 use std::{
-    collections::BTreeMap, f32::consts::PI, fs::OpenOptions, iter::once, mem::replace, sync::Mutex,
+    collections::BTreeMap, f32::consts::PI, fs::OpenOptions, iter::once, mem::replace, panic::catch_unwind, sync::{Mutex, OnceLock}
 };
 
 use fundsp::{
@@ -10,7 +10,7 @@ use fundsp::{
 };
 use itertools::Itertools;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use sha3::{Sha3_256, digest::Update};
+use sha3::{Sha3_256, digest::{FixedOutput, Update}};
 #[derive(Clone, Copy)]
 enum Mode {
     Standard,
@@ -22,10 +22,10 @@ enum Mode {
 
 #[derive(Clone, Copy)]
 struct MergeParams<'a> {
-    a: &'a Wave,
+    a: &'a (Wave,OnceLock<[u8;32]>),
     ax: usize,
     as_: usize,
-    b: &'a Wave,
+    b: &'a (Wave,OnceLock<[u8;32]>),
     bx: usize,
     bs_: usize,
     rx: usize,
@@ -39,6 +39,20 @@ struct MergeParams<'a> {
 
 impl<'a> MergeParams<'a> {
     fn update_hash(&self, s: &mut (dyn Update + '_)) {
+        for (w,h) in [self.a,self.b]{
+            s.update(h.get_or_init(||{
+                match catch_unwind(||{
+                let mut bytes = Vec::new();
+                w.write_wav16(&mut bytes);
+            let mut sha = sha3::Sha3_256::default();
+            sha.update(&bytes);
+            sha.finalize_fixed().into()
+                }){
+                    Ok(a) => a,
+                    Err(_) => [0u8;32]
+                }
+            }));
+        }
         for (v, w) in [self.ax, self.as_, self.bx, self.bs_, self.rx, self.rs]
             .into_iter()
             .enumerate()
@@ -86,10 +100,10 @@ impl<'a> MergeParams<'a> {
 
 fn merge(params: MergeParams) -> Option<Wave> {
     let MergeParams {
-        a,
+        a: (a,_),
         ax,
         as_,
-        b,
+        b: (b,_),
         bx,
         bs_,
         rx,
@@ -360,7 +374,7 @@ fn merge(params: MergeParams) -> Option<Wave> {
     return Some(new);
 }
 fn main() -> Result<(), std::io::Error> {
-    let mut waves = BTreeMap::new();
+    let mut waves: BTreeMap<std::path::PathBuf, (Wave,OnceLock<[u8;32]>)> = BTreeMap::new();
     #[derive(Parser)]
     struct Opt {
         /// Output directory
@@ -390,7 +404,7 @@ fn main() -> Result<(), std::io::Error> {
             let entry = entry?;
             if entry.file_type().is_file() {
                 if let Ok(w) = Wave::load(entry.path()) {
-                    waves.insert(entry.into_path(), w);
+                    waves.insert(entry.into_path(), (w,OnceLock::new()));
                 }
             }
         }
@@ -408,7 +422,7 @@ fn main() -> Result<(), std::io::Error> {
     waves
         .par_iter()
         .flat_map(|a| waves.par_iter().map(move |b| (a, b)))
-        .filter(|((ap, a), (bp, b))| {
+        .filter(|((ap, (a,_)), (bp, (b,_)))| {
             if a.channels() != b.channels() {
                 return false;
             };
@@ -483,7 +497,7 @@ fn main() -> Result<(), std::io::Error> {
                         .write(true)
                         .truncate(true)
                         .open(&path)?;
-                    if c.duration() > a.duration() * 1.4 && c.duration() > b.duration() * 1.4 {
+                    if c.duration() > a.0.duration() * 1.4 && c.duration() > b.0.duration() * 1.4 {
                         c.write_wav16(&mut f)?;
                     } else {
                         c.write_wav32(&mut f)?;
