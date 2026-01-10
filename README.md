@@ -1,13 +1,14 @@
 # music-blender
 
 ## Description
-Project music-blender
+A generic "generator" crate, possibly for audio or signal processing (`fundsp`).
 
 ## Goals
-- [ ] Add project goals
+- [ ] Generate signals/audio
+- [ ] Leverage `fundsp` library
 
 ## Progress
-- [ ] Initial setup
+- [ ] Crate initialized
 
 ---
 *AI assisted*
