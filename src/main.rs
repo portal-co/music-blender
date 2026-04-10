@@ -4,6 +4,7 @@ use std::{
     collections::BTreeMap,
     f32::consts::PI,
     fs::OpenOptions,
+    io::{Read, Write},
     iter::once,
     mem::replace,
     panic::catch_unwind,
@@ -385,6 +386,53 @@ fn merge(params: MergeParams) -> Option<Wave> {
 
     return Some(new);
 }
+/// Recursively load audio files from zip bytes (handles nested zips too).
+/// `virtual_base` is used as the key prefix in the `waves` map so each entry
+/// gets a unique, human-readable path even though the file never lives on disk.
+fn load_from_zip_bytes(
+    virtual_base: &std::path::Path,
+    bytes: Vec<u8>,
+    waves: &mut BTreeMap<std::path::PathBuf, (Wave, OnceLock<[u8; 32]>)>,
+) -> std::io::Result<()> {
+    let cursor = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(cursor)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        if entry.is_dir() {
+            continue;
+        }
+        let entry_name = entry.name().to_string();
+        let virtual_path = virtual_base.join(&entry_name);
+        let ext = std::path::Path::new(&entry_name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let mut entry_bytes = Vec::new();
+        entry.read_to_end(&mut entry_bytes)?;
+        drop(entry); // release borrow on archive before potential recursion
+        if ext == "zip" {
+            // Recurse into nested zip — errors are non-fatal
+            let _ = load_from_zip_bytes(&virtual_path, entry_bytes, waves);
+        } else {
+            // Write to a temp file so Wave::load (symphonia) can probe the format
+            let suffix = format!(".{ext}");
+            if let Ok(mut tmp) = tempfile::Builder::new().suffix(&suffix).tempfile() {
+                if tmp.write_all(&entry_bytes).is_ok() && tmp.flush().is_ok() {
+                    if let Ok(w) = Wave::load(tmp.path()) {
+                        waves.insert(virtual_path, (w, OnceLock::new()));
+                    }
+                }
+                // tmp is dropped here, deleting the temp file
+            }
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), std::io::Error> {
     let mut waves: BTreeMap<std::path::PathBuf, (Wave, OnceLock<[u8; 32]>)> = BTreeMap::new();
     #[derive(Parser)]
@@ -415,8 +463,18 @@ fn main() -> Result<(), std::io::Error> {
         for entry in walkdir::WalkDir::new(input) {
             let entry = entry?;
             if entry.file_type().is_file() {
-                if let Ok(w) = Wave::load(entry.path()) {
-                    waves.insert(entry.into_path(), (w, OnceLock::new()));
+                let path = entry.into_path();
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if ext == "zip" {
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        let _ = load_from_zip_bytes(&path, bytes, &mut waves);
+                    }
+                } else if let Ok(w) = Wave::load(&path) {
+                    waves.insert(path, (w, OnceLock::new()));
                 }
             }
         }
