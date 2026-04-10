@@ -1,7 +1,13 @@
 use clap::Parser;
 use rand::SeedableRng;
 use std::{
-    collections::BTreeMap, f32::consts::PI, fs::OpenOptions, iter::once, mem::replace, panic::catch_unwind, sync::{Mutex, OnceLock}
+    collections::BTreeMap,
+    f32::consts::PI,
+    fs::OpenOptions,
+    iter::once,
+    mem::replace,
+    panic::catch_unwind,
+    sync::{Mutex, OnceLock},
 };
 
 use fundsp::{
@@ -11,7 +17,10 @@ use fundsp::{
 };
 use itertools::Itertools;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use sha3::{Sha3_256, digest::{FixedOutput, Update}};
+use sha3::{
+    Sha3_256,
+    digest::{FixedOutput, Update},
+};
 #[derive(Clone, Copy)]
 enum Mode {
     Standard,
@@ -23,10 +32,10 @@ enum Mode {
 
 #[derive(Clone, Copy)]
 struct MergeParams<'a> {
-    a: &'a (Wave,OnceLock<[u8;32]>),
+    a: &'a (Wave, OnceLock<[u8; 32]>),
     ax: usize,
     as_: usize,
-    b: &'a (Wave,OnceLock<[u8;32]>),
+    b: &'a (Wave, OnceLock<[u8; 32]>),
     bx: usize,
     bs_: usize,
     rx: usize,
@@ -40,17 +49,17 @@ struct MergeParams<'a> {
 
 impl<'a> MergeParams<'a> {
     fn update_hash(&self, s: &mut (dyn Update + '_)) {
-        for (w,h) in [self.a,self.b]{
-            s.update(h.get_or_init(||{
-                match catch_unwind(||{
-                let mut bytes = Vec::new();
-                w.write_wav16(&mut bytes);
-            let mut sha = sha3::Sha3_256::default();
-            sha.update(&bytes);
-            sha.finalize_fixed().into()
-                }){
+        for (w, h) in [self.a, self.b] {
+            s.update(h.get_or_init(|| {
+                match catch_unwind(|| {
+                    let mut bytes = Vec::new();
+                    w.write_wav16(&mut bytes);
+                    let mut sha = sha3::Sha3_256::default();
+                    sha.update(&bytes);
+                    sha.finalize_fixed().into()
+                }) {
                     Ok(a) => a,
-                    Err(_) => [0u8;32]
+                    Err(_) => [0u8; 32],
                 }
             }));
         }
@@ -103,10 +112,10 @@ fn merge(params: MergeParams) -> Option<Wave> {
     let h: [u8; 32] = h.finalize_fixed().into();
     let mut h = rand_chacha::ChaCha20Rng::from_seed(h);
     let MergeParams {
-        a: (a,_),
+        a: (a, _),
         ax,
         as_,
-        b: (b,_),
+        b: (b, _),
         bx,
         bs_,
         rx,
@@ -377,7 +386,7 @@ fn merge(params: MergeParams) -> Option<Wave> {
     return Some(new);
 }
 fn main() -> Result<(), std::io::Error> {
-    let mut waves: BTreeMap<std::path::PathBuf, (Wave,OnceLock<[u8;32]>)> = BTreeMap::new();
+    let mut waves: BTreeMap<std::path::PathBuf, (Wave, OnceLock<[u8; 32]>)> = BTreeMap::new();
     #[derive(Parser)]
     struct Opt {
         /// Output directory
@@ -407,7 +416,7 @@ fn main() -> Result<(), std::io::Error> {
             let entry = entry?;
             if entry.file_type().is_file() {
                 if let Ok(w) = Wave::load(entry.path()) {
-                    waves.insert(entry.into_path(), (w,OnceLock::new()));
+                    waves.insert(entry.into_path(), (w, OnceLock::new()));
                 }
             }
         }
@@ -425,14 +434,14 @@ fn main() -> Result<(), std::io::Error> {
     waves
         .par_iter()
         .flat_map(|a| waves.par_iter().map(move |b| (a, b)))
-        .filter(|((ap, (a,_)), (bp, (b,_)))| {
+        .filter(|((ap, (a, _)), (bp, (b, _)))| {
             if a.channels() != b.channels() {
                 return false;
             };
             if a.sample_rate() != b.sample_rate() {
                 return false;
             };
-            if a.len() == 2 || b.len() == 2{
+            if a.len() == 2 || b.len() == 2 {
                 return false;
             }
             return true;
